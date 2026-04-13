@@ -29,3 +29,16 @@
 | ACTUAL_COST | float | Actual cost to NHS (£) | All modules |
 | UNIDENTIFIED | string | Unidentified prescriber flag | Module 3 |
 | SNOMED_CODE | string | SNOMED CT clinical code | Future v2 |
+
+## Performance Results — EXPLAIN ANALYZE
+| Query | Before indexing | After indexing | Improvement |
+|-------|----------------|----------------|-------------|
+| GROUP BY practice_code (full scan) | 96,148 ms | 49,978 ms | 48% faster |
+| WHERE practice_code filter | ~96,000 ms | 227 ms | 99.8% faster |
+
+Indexes created:
+- idx_practice_code ON raw_prescriptions (practice_code)
+- idx_bnf_presentation_code ON raw_prescriptions (bnf_presentation_code)
+- idx_bnf_chapter ON raw_prescriptions (bnf_chapter_plus_code)
+- idx_year_month ON raw_prescriptions (year_month)
+- idx_practice_bnf ON raw_prescriptions (practice_code, bnf_presentation_code)
