@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: public
+    database: nhs_prescribing
+    schema: public
+    tables:
+      - name: raw_prescriptions
+        description: "Raw NHS EPD prescribing data - Nov 2025 to Jan 2026 - 54.7M rows"
+        columns:
+          - name: practice_code
+            description: "GP practice code"
+            tests:
+              - not_null
+          - name: actual_cost
+            description: "Actual cost to NHS in GBP"
+            tests:
+              - not_null
+          - name: bnf_chapter_plus_code
+            description: "BNF drug classification code"

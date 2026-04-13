@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: stg_prescriptions
+    description: "Cleaned and typed prescriptions - staging layer"
+    columns:
+      - name: practice_code
+        description: "GP practice code"
+        tests:
+          - not_null
+      - name: actual_cost
+        description: "Actual cost to NHS in GBP"
+        tests:
+          - not_null
+      - name: bnf_chapter
+        description: "2-digit BNF chapter code"
+        tests:
+          - not_null
