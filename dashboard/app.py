@@ -65,19 +65,45 @@ t1, t2, t3, t4, t5 = st.tabs(["Brand vs Generic", "AMR Monitor", "Anomaly Detect
 
 with t1:
     st.subheader("Brand vs Generic Savings Opportunity")
-    st.caption("Practices where branded prescribing significantly exceeds generic equivalents — built using 5 years ICD-10/CPT/HCPCS coding expertise")
-    df = q(f"SELECT national_rank, practice_name, icb_name, branded_cost, generic_cost, brand_rate_pct, spend_decile FROM summary_brand_vs_generic {icb_filter} ORDER BY national_rank LIMIT 20")
+    st.caption("Highlights practices where branded prescribing materially exceeds generic alternatives, indicating possible cost-saving opportunities.")
+
+    df = q(f"SELECT national_rank, practice_name, icb_name, branded_cost, generic_cost, brand_rate_pct, spend_decile FROM summary_brand_vs_generic {icb_filter} ORDER BY national_rank LIMIT 10")
+
     if not df.empty:
-        fig = px.bar(df, x='practice_name', y=['branded_cost', 'generic_cost'], barmode='group',
-            color_discrete_map={'branded_cost': '#D85A30', 'generic_cost': '#1D9E75'},
-            labels={'value': 'Cost (£)', 'practice_name': 'Practice'}, height=450)
-        fig.update_xaxes(tickangle=45)
-        fig.update_layout(legend_title="", margin=dict(b=130, t=20))
+        df['savings_gap'] = df['branded_cost'] - df['generic_cost']
+        df['short_name'] = df['practice_name'].str[:35]
+
+        s1, s2, s3 = st.columns(3)
+        top = df.iloc[0]
+        s1.metric("Top savings opportunity", top['practice_name'][:28], f"£{top['savings_gap']:,.0f} gap")
+        s2.metric("Avg branded rate", f"{df['brand_rate_pct'].mean():.1f}%", "across top 10 practices")
+        s3.metric("Total branded spend", f"£{df['branded_cost'].sum()/1e6:.1f}M", "top 10 practices")
+
+        fig = go.Figure(go.Bar(
+            x=df['savings_gap'],
+            y=df['short_name'],
+            orientation='h',
+            marker_color='#D85A30',
+            text=[f"£{v:,.0f}" for v in df['savings_gap']],
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Savings gap: £%{x:,.0f}<extra></extra>'
+        ))
+        fig.update_layout(
+            height=420,
+            xaxis_title="Potential savings gap (£)",
+            yaxis_title="",
+            yaxis=dict(autorange="reversed"),
+            margin=dict(l=20, r=120, t=20, b=40),
+            plot_bgcolor='white',
+            xaxis=dict(gridcolor='#f0f0f0')
+        )
         st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df[['national_rank','practice_name','icb_name','branded_cost','generic_cost','brand_rate_pct']].rename(columns={
-            'national_rank':'Rank','practice_name':'Practice','icb_name':'ICB',
-            'branded_cost':'Branded Cost (£)','generic_cost':'Generic Cost (£)','brand_rate_pct':'Brand Rate %'
-        }), use_container_width=True, hide_index=True)
+
+        display_df = df[['national_rank','practice_name','icb_name','branded_cost','generic_cost','savings_gap','brand_rate_pct']].copy()
+        display_df.columns = ['Rank','Practice','ICB','Branded Cost (£)','Generic Cost (£)','Savings Gap (£)','Brand Rate %']
+        display_df['Brand Rate %'] = display_df['Brand Rate %'].apply(lambda x: f"{x:.1f}%")
+        st.caption("Higher brand rate % = heavier use of branded items relative to generic alternatives. Savings gap = branded cost minus generic cost.")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 with t2:
     st.subheader("AMR Monitor — MSc Microbiology Applied")
@@ -88,14 +114,14 @@ with t2:
         amr['status'] = amr['antibiotic_rate_pct'].apply(
             lambda x: 'High outlier' if x > nat_avg * 1.5 else ('Above average' if x > nat_avg else 'Within range'))
         color_map = {'High outlier': '#D85A30', 'Above average': '#EF9F27', 'Within range': '#1D9E75'}
-        fig2 = px.bar(amr, x='practice_name', y='antibiotic_rate_pct', color='status',
-            color_discrete_map=color_map,
-            labels={'antibiotic_rate_pct': 'Antibiotic Rate (%)', 'practice_name': 'Practice', 'status': 'Status'},
+        amr['short_name'] = amr['practice_name'].str[:35]
+        fig2 = px.bar(amr, x='antibiotic_rate_pct', y='short_name',
+            orientation='h', color='status', color_discrete_map=color_map,
+            labels={'antibiotic_rate_pct': 'Antibiotic Rate (%)', 'short_name': ''},
             height=480)
-        fig2.add_hline(y=nat_avg, line_dash="dash", line_color="#2E75B6",
-            annotation_text=f"Group average: {nat_avg:.1f}%", annotation_position="top right")
-        fig2.update_xaxes(tickangle=45)
-        fig2.update_layout(margin=dict(b=150, t=20), legend_title="")
+        fig2.add_vline(x=nat_avg, line_dash="dash", line_color="#2E75B6",
+            annotation_text=f"Group avg: {nat_avg:.1f}%", annotation_position="top right")
+        fig2.update_layout(yaxis=dict(autorange="reversed"), margin=dict(l=20, r=120, t=20, b=40), legend_title="")
         st.plotly_chart(fig2, use_container_width=True)
         st.dataframe(amr[['practice_name','icb_name','antibiotic_rate_pct','status']].rename(columns={
             'practice_name':'Practice','icb_name':'ICB','antibiotic_rate_pct':'Antibiotic Rate %','status':'Status'
@@ -147,12 +173,15 @@ with t4:
     st.caption("Cost efficiency across ICBs — ordered by total prescribing spend")
     bench = q(f"SELECT practice_name, icb_name, total_cost, avg_cost_per_item, total_items FROM summary_benchmark {icb_filter} ORDER BY total_cost DESC LIMIT 20")
     if not bench.empty:
-        fig4 = px.bar(bench, x='practice_name', y='total_cost', color='icb_name',
-            labels={'total_cost': 'Total cost (£)', 'practice_name': 'Practice'}, height=460)
-        fig4.update_xaxes(tickangle=45)
-        fig4.update_layout(legend_title="ICB", margin=dict(b=150, t=20))
+        bench['short_name'] = bench['practice_name'].str[:35]
+        fig4 = px.bar(bench, x='total_cost', y='short_name',
+            orientation='h', color='icb_name',
+            labels={'total_cost': 'Total cost (£)', 'short_name': ''},
+            height=500)
+        fig4.update_layout(yaxis=dict(autorange="reversed"),
+            legend_title="ICB", margin=dict(l=20, r=20, t=20, b=40))
         st.plotly_chart(fig4, use_container_width=True)
-        st.dataframe(bench.rename(columns={
+        st.dataframe(bench[['practice_name','icb_name','total_cost','avg_cost_per_item','total_items']].rename(columns={
             'practice_name':'Practice','icb_name':'ICB','total_cost':'Total Cost (£)',
             'avg_cost_per_item':'Avg Cost/Item (£)','total_items':'Total Items'
         }), use_container_width=True, hide_index=True)
