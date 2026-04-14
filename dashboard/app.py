@@ -1,398 +1,181 @@
-"""
-MedChronology AI — Final Version
-=================================
-Upload medical PDFs → extract sorted timeline → export for legal use.
-
-Run:   streamlit run app.py
-Needs: OPENAI_API_KEY in .streamlit/secrets.toml
-"""
-
-import json
-import logging
-import os
-from datetime import datetime
-from itertools import groupby
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from sqlalchemy import create_engine, text
 
-from extractor import process_pdfs, sort_events
+st.set_page_config(page_title="NHS Prescribing Intelligence", layout="wide")
 
-log = logging.getLogger("medchrono.app")
-
-# ── Page config ────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="MedChronology AI",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ── API key ────────────────────────────────────────────────────────────────────
-api_key = st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-if api_key:
-    os.environ["OPENAI_API_KEY"] = api_key
-
-# ── Styles ─────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  /* Timeline card */
-  .ev-card {
-    border-left: 4px solid #64748b;
-    background: #f8fafc;
-    border-radius: 0 8px 8px 0;
-    padding: 10px 16px;
-    margin-bottom: 8px;
-  }
-  .ev-card.high   { border-left-color: #22c55e; }
-  .ev-card.medium { border-left-color: #f59e0b; }
-  .ev-card.low    { border-left-color: #ef4444; }
-
-  .ev-date   { font-size:.75rem; font-weight:600; letter-spacing:.06em;
-               text-transform:uppercase; color:#475569; margin-bottom:3px; }
-  .ev-title  { font-size:.95rem; font-weight:600; color:#0f172a; margin:2px 0; }
-  .ev-detail { font-size:.82rem; color:#64748b; margin-bottom:6px; }
-  .ev-badge  { display:inline-block; font-size:.7rem; font-weight:500;
-               padding:2px 8px; border-radius:999px; margin-right:4px; }
-  .badge-src  { background:#e2e8f0; color:#475569; }
-  .badge-high   { background:#dcfce7; color:#166534; }
-  .badge-medium { background:#fef9c3; color:#854d0e; }
-  .badge-low    { background:#fee2e2; color:#991b1b; }
-
-  /* Year divider */
-  .year-marker {
-    font-size:.8rem; font-weight:700; color:#94a3b8;
-    letter-spacing:.1em; text-transform:uppercase;
-    border-bottom:1px solid #e2e8f0;
-    padding-bottom:4px; margin:1.2rem 0 .6rem;
-  }
-
-  /* Disclaimer */
-  .disclaimer {
-    background:#fff7ed; border:1px solid #fed7aa;
-    border-radius:8px; padding:10px 14px;
-    font-size:.78rem; color:#9a3412; margin-bottom:1rem;
-  }
+.main-title { font-size: 2.8rem; font-weight: 800; color: #1F4E79; margin-bottom: 8px; line-height: 1.2; }
+.sub-title { font-size: 1.15rem; color: #333; margin-bottom: 6px; line-height: 1.6; }
+.byline { font-size: 0.95rem; color: #555; margin-bottom: 0; }
+.insight-box { background: #EAF3FB; border-left: 4px solid #2E75B6; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 0.92rem; color: #1F4E79; }
+.footer-line1 { text-align: center; color: #555; font-size: 0.85rem; margin-bottom: 4px; }
+.footer-line2 { text-align: center; color: #888; font-size: 0.82rem; }
+.footer-wrap { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; }
+div[data-baseweb="select"] > div { border-color: #ccc !important; box-shadow: none !important; }
+div[data-baseweb="select"] > div:focus-within { border-color: #2E75B6 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🏥 MedChronology AI")
-    st.markdown("*Medical records → sorted timeline*")
-    st.divider()
-
-    if not api_key:
-        st.error("⚠️ No OpenAI API key.\nAdd OPENAI_API_KEY to Streamlit Secrets.")
-
-    uploaded_files = st.file_uploader(
-        "Upload medical PDFs",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="GP letters, hospital discharge summaries, specialist reports, test results",
-    )
-
-    st.divider()
-
-    # Filters — shown only once results exist
-    filters = {}
-    if "events" in st.session_state and st.session_state.events:
-        events_all = st.session_state.events
-        sources = sorted(set(e["source"] for e in events_all))
-
-        st.markdown("### Filters")
-        filters["sources"] = st.multiselect("Documents", sources, default=sources)
-        filters["confidence"] = st.multiselect(
-            "Date confidence",
-            ["high", "medium", "low"],
-            default=["high", "medium", "low"],
-            help="high = exact date  |  medium = month+year  |  low = year only",
-        )
-        filters["show_undated"] = st.checkbox("Show undated events", value=True)
-
-        year_vals = sorted(set(
-            datetime.fromisoformat(e["date"]).year
-            for e in events_all if e.get("date")
-        ))
-        if len(year_vals) > 1:
-            filters["year_range"] = st.slider(
-                "Year range",
-                min_value=min(year_vals),
-                max_value=max(year_vals),
-                value=(min(year_vals), max(year_vals)),
-            )
-        else:
-            filters["year_range"] = (min(year_vals), max(year_vals)) if year_vals else (1900, 2100)
-
-    st.session_state.filters = filters
-
-    st.divider()
-    st.markdown(
-        "<div style='font-size:.72rem;color:#94a3b8'>"
-        "PyMuPDF · dateparser · OpenAI gpt-4o-mini<br>"
-        "Always verify against source documents."
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-
-# ── Header ─────────────────────────────────────────────────────────────────────
-st.title("Medical Records Chronology Builder")
-st.markdown(
-    "Upload medical PDFs and generate a **sorted chronology** "
-    "with source document and page citations."
+db = st.secrets["connections"]["postgresql"]
+engine = create_engine(
+    f"postgresql+psycopg2://{db['username']}:{db['password']}@{db['host']}:{db['port']}/{db['database']}"
 )
 
-st.markdown("""
-<div class="disclaimer">
-⚠️ <strong>For informational use only.</strong>
-This tool extracts and organises information from uploaded documents.
-It does not provide medical or legal advice.
-Always verify outputs against the original source documents.
-</div>
-""", unsafe_allow_html=True)
+def q(sql):
+    with engine.connect() as conn:
+        return pd.read_sql(text(sql), conn)
 
-if not uploaded_files:
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.info("**Step 1 — Upload**\nAdd medical PDFs in the sidebar.")
-    with c2:
-        st.info("**Step 2 — Extract**\nAI reads every page and finds dated events.")
-    with c3:
-        st.info("**Step 3 — Export**\nDownload as CSV or Word-ready table.")
-    st.stop()
+st.markdown('<p class="main-title">NHS Prescribing Intelligence Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Explore NHS prescribing patterns across England using cost, volume, variation, AMR indicators and anomaly detection — built on 54,691,186 real prescriptions (Nov 2025–Jan 2026).</p>', unsafe_allow_html=True)
+st.markdown('<p class="byline">Built by <strong>Keerthana Murugesan</strong> · MSc Immunology & Microbiology · ICD-10/CPT/HCPCS · 7 yrs Data Engineering</p>', unsafe_allow_html=True)
+st.divider()
 
+k1, k2, k3 = st.columns(3)
+k1.metric("Total Prescriptions", "54.7M", "Nov 2025–Jan 2026")
+k2.metric("Total Spend", "£8.2B+", "3 months NHS England")
+k3.metric("Practices Analysed", "10,000+", "All ICBs")
 
-# ── Run button ─────────────────────────────────────────────────────────────────
-col_btn, col_info = st.columns([2, 5])
-with col_btn:
-    run = st.button(
-        "⚡ Build Chronology",
-        type="primary",
-        disabled=not api_key,
-        use_container_width=True,
-    )
-with col_info:
-    names = ", ".join(f.name for f in uploaded_files[:3])
-    if len(uploaded_files) > 3:
-        names += f" … +{len(uploaded_files)-3} more"
-    st.markdown(f"**{len(uploaded_files)} document(s):** {names}")
-
-if run:
-    st.session_state.pop("events", None)
-
-    prog  = st.progress(0, text="Starting…")
-    status = st.empty()
-    all_ev = []
-
-    for i, f in enumerate(uploaded_files):
-        status.info(f"📄 Processing **{f.name}** ({i+1}/{len(uploaded_files)})…")
-        prog.progress(i / len(uploaded_files), text=f"Extracting from {f.name}…")
-        evs = process_pdfs([f])
-        all_ev.extend(evs)
-        log.info("Done with %s — running total: %d events", f.name, len(all_ev))
-
-    prog.progress(1.0, text="Done.")
-    prog.empty()
-    status.empty()
-
-    st.session_state.events = all_ev
-
-    if all_ev:
-        st.success(
-            f"✅ Extracted **{len(all_ev)} events** "
-            f"from **{len(uploaded_files)} document(s)**."
-        )
-        log.info("Extraction complete. %d events stored.", len(all_ev))
-    else:
-        st.warning(
-            "No dated events found. "
-            "Check PDFs are text-based (not scanned images). "
-            "Scanned PDFs need OCR pre-processing."
-        )
-
-
-# ── Results ────────────────────────────────────────────────────────────────────
-if not st.session_state.get("events"):
-    st.stop()
-
-events_all = st.session_state.events
-f = st.session_state.get("filters", {})
-
-# Apply filters
-def apply_filters(evs, f):
-    out = []
-    yr_min, yr_max = f.get("year_range", (1900, 2100))
-    for ev in evs:
-        if f.get("sources") and ev["source"] not in f["sources"]:
-            continue
-        if f.get("confidence") and ev["confidence"] not in f["confidence"]:
-            continue
-        d = ev.get("date")
-        if not d:
-            if not f.get("show_undated", True):
-                continue
-        else:
-            try:
-                yr = datetime.fromisoformat(d).year
-                if not (yr_min <= yr <= yr_max):
-                    continue
-            except ValueError:
-                pass
-        out.append(ev)
-    return out
-
-events = apply_filters(events_all, f)
-
-# ── Metrics ────────────────────────────────────────────────────────────────────
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Total events",   len(events))
-m2.metric("Documents",      len(set(e["source"] for e in events)))
-dated   = [e for e in events if e.get("date")]
-m3.metric("Dated events",   len(dated))
-high    = sum(1 for e in events if e.get("confidence") == "high")
-pct     = round(high / len(events) * 100) if events else 0
-m4.metric("High confidence", f"{pct}%")
-low_conf = sum(1 for e in events if e.get("confidence") == "low")
-m5.metric("Low confidence",  low_conf,
-          delta=f"-{low_conf} verify" if low_conf else None,
-          delta_color="inverse")
+try:
+    top_anomaly = q("SELECT practice_name, avg_cost FROM summary_anomaly ORDER BY avg_cost DESC LIMIT 1")
+    top_amr = q("SELECT practice_name, antibiotic_rate_pct FROM summary_amr ORDER BY antibiotic_rate_pct DESC LIMIT 1")
+    top_bench = q("SELECT icb_name, SUM(total_cost) as spend FROM summary_benchmark GROUP BY icb_name ORDER BY spend DESC LIMIT 1")
+    st.markdown("**Key insights from the data:**")
+    i1, i2, i3 = st.columns(3)
+    if not top_anomaly.empty:
+        i1.metric("Highest avg cost practice", f"£{top_anomaly.iloc[0]['avg_cost']:,.0f}", top_anomaly.iloc[0]['practice_name'][:30])
+    if not top_amr.empty:
+        i2.metric("Highest antibiotic outlier rate", f"{top_amr.iloc[0]['antibiotic_rate_pct']}%", top_amr.iloc[0]['practice_name'][:30])
+    if not top_bench.empty:
+        i3.metric("Highest spend ICB", f"£{top_bench.iloc[0]['spend']/1e6:.1f}M", top_bench.iloc[0]['icb_name'][:35])
+except:
+    pass
 
 st.divider()
 
-# ── View toggle ────────────────────────────────────────────────────────────────
-view = st.radio(
-    "View",
-    ["📋 Timeline", "📊 Table", "⬇️ Export"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+icb_list = q("SELECT DISTINCT icb_name FROM summary_benchmark WHERE icb_name IS NOT NULL ORDER BY icb_name")
+icb_options = ["All ICBs"] + icb_list["icb_name"].tolist()
+selected_icb = st.selectbox("Filter by ICB", icb_options)
+icb_filter = "" if selected_icb == "All ICBs" else f"WHERE icb_name = '{selected_icb}'"
 
-# ─── Timeline view ─────────────────────────────────────────────────────────────
-if view == "📋 Timeline":
+t1, t2, t3, t4, t5 = st.tabs(["Brand vs Generic", "AMR Monitor", "Anomaly Detection", "Benchmarking", "Trend & Drift"])
 
-    def year_key(ev):
-        d = ev.get("date")
-        if d:
-            try:
-                return str(datetime.fromisoformat(d).year)
-            except ValueError:
-                pass
-        return "Undated"
+with t1:
+    st.subheader("Brand vs Generic Savings Opportunity")
+    st.caption("Practices where branded prescribing significantly exceeds generic equivalents — built using 5 years ICD-10/CPT/HCPCS coding expertise")
+    df = q(f"SELECT national_rank, practice_name, icb_name, branded_cost, generic_cost, brand_rate_pct, spend_decile FROM summary_brand_vs_generic {icb_filter} ORDER BY national_rank LIMIT 20")
+    if not df.empty:
+        fig = px.bar(df, x='practice_name', y=['branded_cost', 'generic_cost'], barmode='group',
+            color_discrete_map={'branded_cost': '#D85A30', 'generic_cost': '#1D9E75'},
+            labels={'value': 'Cost (£)', 'practice_name': 'Practice'}, height=450)
+        fig.update_xaxes(tickangle=45)
+        fig.update_layout(legend_title="", margin=dict(b=130, t=20))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(df[['national_rank','practice_name','icb_name','branded_cost','generic_cost','brand_rate_pct']].rename(columns={
+            'national_rank':'Rank','practice_name':'Practice','icb_name':'ICB',
+            'branded_cost':'Branded Cost (£)','generic_cost':'Generic Cost (£)','brand_rate_pct':'Brand Rate %'
+        }), use_container_width=True, hide_index=True)
 
-    sorted_ev = sort_events(events)
-    for year, grp in groupby(sorted_ev, key=year_key):
-        st.markdown(f'<div class="year-marker">{year}</div>', unsafe_allow_html=True)
-        for ev in grp:
-            conf     = ev.get("confidence", "medium")
-            date_raw = ev.get("date_raw") or ev.get("date") or "Unknown date"
-            event    = ev.get("event", "")
-            detail   = ev.get("detail", "")
-            source   = ev.get("source", "")
-            page     = ev.get("page", "?")
+with t2:
+    st.subheader("AMR Monitor — MSc Microbiology Applied")
+    st.markdown('<div class="insight-box">This view compares broad-spectrum antibiotic prescribing rates across practices to highlight variation relevant to NHS antimicrobial stewardship programmes. The resistance tier classification was built from MSc Immunology & Microbiology expertise — not a standard BNF lookup.</div>', unsafe_allow_html=True)
+    amr = q(f"SELECT practice_name, icb_name, antibiotic_rate_pct, total_cost FROM summary_amr {icb_filter} ORDER BY antibiotic_rate_pct DESC LIMIT 15")
+    if not amr.empty:
+        nat_avg = amr['antibiotic_rate_pct'].mean()
+        amr['status'] = amr['antibiotic_rate_pct'].apply(
+            lambda x: 'High outlier' if x > nat_avg * 1.5 else ('Above average' if x > nat_avg else 'Within range'))
+        color_map = {'High outlier': '#D85A30', 'Above average': '#EF9F27', 'Within range': '#1D9E75'}
+        fig2 = px.bar(amr, x='practice_name', y='antibiotic_rate_pct', color='status',
+            color_discrete_map=color_map,
+            labels={'antibiotic_rate_pct': 'Antibiotic Rate (%)', 'practice_name': 'Practice', 'status': 'Status'},
+            height=480)
+        fig2.add_hline(y=nat_avg, line_dash="dash", line_color="#2E75B6",
+            annotation_text=f"Group average: {nat_avg:.1f}%", annotation_position="top right")
+        fig2.update_xaxes(tickangle=45)
+        fig2.update_layout(margin=dict(b=150, t=20), legend_title="")
+        st.plotly_chart(fig2, use_container_width=True)
+        st.dataframe(amr[['practice_name','icb_name','antibiotic_rate_pct','status']].rename(columns={
+            'practice_name':'Practice','icb_name':'ICB','antibiotic_rate_pct':'Antibiotic Rate %','status':'Status'
+        }), use_container_width=True, hide_index=True)
 
-            detail_html = (
-                f'<div class="ev-detail">{detail}</div>' if detail else ""
-            )
-            st.markdown(f"""
-            <div class="ev-card {conf}">
-              <div class="ev-date">📅 {date_raw}</div>
-              <div class="ev-title">{event}</div>
-              {detail_html}
-              <span class="ev-badge badge-src">📄 {source} · p.{page}</span>
-              <span class="ev-badge badge-{conf}">{conf} confidence</span>
-            </div>
-            """, unsafe_allow_html=True)
+with t3:
+    st.subheader("Anomaly Detection")
+    st.caption("Cost outliers identified using audit-style rejection logic from biomedical equipment claims experience")
+    anomaly = q(f"SELECT practice_name, icb_name, bnf_chapter_plus_code, total_cost, avg_cost, rx_count FROM summary_anomaly {icb_filter} ORDER BY avg_cost DESC LIMIT 50")
+    if not anomaly.empty:
+        top1 = anomaly.iloc[0]
+        col_ins1, col_ins2, col_ins3 = st.columns(3)
+        col_ins1.metric("Top cost outlier", top1['practice_name'][:25], f"£{top1['avg_cost']:,.0f} avg cost")
+        col_ins2.metric("Most flagged BNF chapter", anomaly['bnf_chapter_plus_code'].value_counts().index[0][:25], "by frequency")
+        avg_cost_median = anomaly['avg_cost'].median()
+        outlier_count = len(anomaly[anomaly['avg_cost'] > avg_cost_median * 1.5])
+        col_ins3.metric("Outliers identified", f"{outlier_count}", "high-cost practices")
+        anomaly['is_outlier'] = anomaly['avg_cost'] > avg_cost_median * 1.5
+        top_outliers = anomaly[anomaly['is_outlier']].head(5)['practice_name'].tolist()
+        anomaly['label'] = anomaly.apply(
+            lambda r: r['practice_name'][:22] if r['practice_name'] in top_outliers else '', axis=1)
+        fig3 = go.Figure()
+        normal = anomaly[~anomaly['is_outlier']]
+        outliers = anomaly[anomaly['is_outlier']]
+        fig3.add_trace(go.Scatter(
+            x=normal['rx_count'], y=normal['avg_cost'], mode='markers',
+            marker=dict(size=8, color='#B4B2A9', opacity=0.6), name='Normal',
+            hovertemplate='<b>%{customdata[0]}</b><br>Avg cost: £%{y:,.0f}<br>Rx count: %{x:,}<extra></extra>',
+            customdata=normal[['practice_name']].values))
+        fig3.add_trace(go.Scatter(
+            x=outliers['rx_count'], y=outliers['avg_cost'], mode='markers+text',
+            marker=dict(size=12, color='#D85A30', opacity=0.9),
+            text=outliers['label'], textposition='top center',
+            textfont=dict(size=10, color='#1F4E79'), name='Outlier',
+            hovertemplate='<b>%{customdata[0]}</b><br>Avg cost: £%{y:,.0f}<br>Rx count: %{x:,}<extra></extra>',
+            customdata=outliers[['practice_name']].values))
+        fig3.update_layout(height=520, xaxis_title="Prescription Count",
+            yaxis_title="Avg Cost per Item (£)", legend_title="",
+            margin=dict(t=30, b=50, l=60, r=30))
+        st.plotly_chart(fig3, use_container_width=True)
+        st.markdown("**Flagged high-cost practices — top 10**")
+        st.dataframe(anomaly[anomaly['is_outlier']][['practice_name','icb_name','bnf_chapter_plus_code','avg_cost','rx_count']].head(10).rename(columns={
+            'practice_name':'Practice','icb_name':'ICB','bnf_chapter_plus_code':'BNF Chapter',
+            'avg_cost':'Avg Cost (£)','rx_count':'Rx Count'
+        }), use_container_width=True, hide_index=True)
 
-# ─── Table view ────────────────────────────────────────────────────────────────
-elif view == "📊 Table":
-    rows = [
-        {
-            "Date (raw)":  ev.get("date_raw", ""),
-            "Date (ISO)":  ev.get("date", ""),
-            "Event":       ev.get("event", ""),
-            "Detail":      ev.get("detail", ""),
-            "Confidence":  ev.get("confidence", ""),
-            "Source":      ev.get("source", ""),
-            "Page":        ev.get("page", ""),
-        }
-        for ev in events
-    ]
-    df = pd.DataFrame(rows)
+with t4:
+    st.subheader("Practice Benchmarking")
+    st.caption("Cost efficiency across ICBs — ordered by total prescribing spend")
+    bench = q(f"SELECT practice_name, icb_name, total_cost, avg_cost_per_item, total_items FROM summary_benchmark {icb_filter} ORDER BY total_cost DESC LIMIT 20")
+    if not bench.empty:
+        fig4 = px.bar(bench, x='practice_name', y='total_cost', color='icb_name',
+            labels={'total_cost': 'Total cost (£)', 'practice_name': 'Practice'}, height=460)
+        fig4.update_xaxes(tickangle=45)
+        fig4.update_layout(legend_title="ICB", margin=dict(b=150, t=20))
+        st.plotly_chart(fig4, use_container_width=True)
+        st.dataframe(bench.rename(columns={
+            'practice_name':'Practice','icb_name':'ICB','total_cost':'Total Cost (£)',
+            'avg_cost_per_item':'Avg Cost/Item (£)','total_items':'Total Items'
+        }), use_container_width=True, hide_index=True)
 
-    def colour_conf(val):
-        colours = {"high": "background-color:#dcfce7",
-                   "medium": "background-color:#fef9c3",
-                   "low": "background-color:#fee2e2"}
-        return colours.get(val, "")
+with t5:
+    st.subheader("Trend and Drift Analysis")
+    st.caption("Monthly spend by BNF chapter — rolling averages and month-on-month drift")
+    trend = q("SELECT year_month, ch, monthly_cost FROM summary_trend ORDER BY year_month, ch")
+    if not trend.empty:
+        top6 = trend.groupby('ch')['monthly_cost'].sum().nlargest(6).index.tolist()
+        fig5 = px.line(trend[trend['ch'].isin(top6)], x='year_month', y='monthly_cost', color='ch',
+            title="Monthly spend — top 6 BNF chapters",
+            labels={'monthly_cost': 'Monthly Cost (£)', 'year_month': 'Month', 'ch': 'BNF Chapter'},
+            markers=True, height=450)
+        fig5.update_layout(legend_title="BNF Chapter", margin=dict(t=40, b=40))
+        st.plotly_chart(fig5, use_container_width=True)
+        st.dataframe(trend.rename(columns={
+            'year_month':'Month','ch':'BNF Chapter','monthly_cost':'Monthly Cost (£)'
+        }), use_container_width=True, hide_index=True)
 
-    styled = df.style.applymap(colour_conf, subset=["Confidence"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
-# ─── Export view ───────────────────────────────────────────────────────────────
-elif view == "⬇️ Export":
-    rows = [
-        {
-            "Date (raw)":  ev.get("date_raw", ""),
-            "Date (ISO)":  ev.get("date", ""),
-            "Event":       ev.get("event", ""),
-            "Detail":      ev.get("detail", ""),
-            "Confidence":  ev.get("confidence", ""),
-            "Source":      ev.get("source", ""),
-            "Page":        ev.get("page", ""),
-        }
-        for ev in events
-    ]
-    df = pd.DataFrame(rows)
-
-    ec1, ec2, ec3 = st.columns(3)
-
-    # CSV
-    with ec1:
-        st.download_button(
-            "⬇️ Download CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="medical_chronology.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-    # JSON
-    with ec2:
-        st.download_button(
-            "⬇️ Download JSON",
-            data=json.dumps(events, indent=2, default=str),
-            file_name="medical_chronology.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-
-    # Word-ready plain text chronology
-    with ec3:
-        lines = ["MEDICAL CHRONOLOGY\n", "=" * 50 + "\n"]
-        current_year = None
-        for ev in sort_events(events):
-            yr = ev.get("date", "")[:4] if ev.get("date") else "Undated"
-            if yr != current_year:
-                lines.append(f"\n--- {yr} ---\n")
-                current_year = yr
-            lines.append(
-                f"{ev.get('date_raw','Unknown date')}\n"
-                f"  {ev.get('event','')}\n"
-                + (f"  {ev.get('detail','')}\n" if ev.get("detail") else "")
-                + f"  [Source: {ev.get('source','')} p.{ev.get('page','')} "
-                  f"| {ev.get('confidence','')} confidence]\n\n"
-            )
-        txt = "".join(lines)
-        st.download_button(
-            "⬇️ Download TXT (Word-ready)",
-            data=txt.encode("utf-8"),
-            file_name="medical_chronology.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
-
-    st.markdown("---")
-    st.markdown("**Preview**")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+st.markdown("""
+<div class="footer-wrap">
+  <p class="footer-line1">Built by <strong>Keerthana Murugesan</strong> &nbsp;|&nbsp; Healthcare Analytics &nbsp;|&nbsp; Python &nbsp;|&nbsp; SQL &nbsp;|&nbsp; PostgreSQL &nbsp;|&nbsp; dbt &nbsp;|&nbsp; Streamlit &nbsp;|&nbsp; Power BI</p>
+  <p class="footer-line2"><a href="https://github.com/Keer0205/nhs-prescribing-intelligence" target="_blank">GitHub Repository</a> &nbsp;|&nbsp; MSc Immunology & Microbiology &nbsp;|&nbsp; ICD-10/CPT/HCPCS &nbsp;|&nbsp; 7 yrs Data Engineering</p>
+</div>
+""", unsafe_allow_html=True)
