@@ -74,3 +74,26 @@ Add `.streamlit/secrets.toml` with your PostgreSQL credentials.
 ---
 
 *MSc Immunology & Microbiology · ICD-10/CPT/HCPCS · 7 yrs Data Engineering · NHS England EPD*
+
+## Performance Engineering
+
+One of the key challenges of this project was making 54,691,186 rows queryable at speed.
+
+### Indexing Strategy
+
+After bulk loading, 5 indexes were created on raw_prescriptions. The query planner switched from a full sequential scan to a Bitmap Index Scan.
+
+| Query type | Before indexing | After indexing | Improvement |
+|-----------|----------------|---------------|-------------|
+| Filtered practice lookup | ~39,000 ms | 7.8 ms | 99.98% faster |
+
+### Materialised Views
+
+Summary tables pre-aggregate the 54M row fact table into 5 lean reporting tables (~26MB total), powering sub-second dashboard load times on Streamlit Cloud.
+
+## Known Limitations
+
+- Population-level only — The NHSBSA EPD does not contain patient-level records or linked ICD-10 diagnosis codes. All analysis is at practice, ICB, or drug category level.
+- v1.0 uses Nov 2025-Jan 2026 EPD SNOMED CT-enhanced schema. v2.0 will incorporate additional SNOMED dimensions.
+- Brand vs generic savings are opportunity estimates. Some branded prescribing is clinically justified.
+- The live dashboard queries pre-aggregated summary tables, not the full 54M row dataset, to enable cloud deployment within Supabase free tier limits.
