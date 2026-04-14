@@ -16,6 +16,11 @@ def q(sql):
     with engine.connect() as conn:
         return pd.read_sql(text(sql), conn)
 
+k1,k2,k3 = st.columns(3)
+k1.metric("Total Prescriptions", "54.7M", "Nov 2025-Jan 2026")
+k2.metric("Total Spend", "£8.2B+", "3 months NHS England")
+k3.metric("Practices Analysed", "10,000+", "All ICBs")
+
 t1,t2,t3,t4,t5 = st.tabs(["Brand vs Generic","AMR Monitor","Anomaly Detection","Benchmarking","Trend & Drift"])
 
 with t1:
