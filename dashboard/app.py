@@ -110,7 +110,7 @@ with t3:
                ROUND(((mc-prev_mc)/NULLIF(prev_mc,0)*100)::NUMERIC,1) mom_pct
         FROM s
         WHERE prev_mc IS NOT NULL
-          AND ABS((mc-avg_mc)/NULLIF(std_mc,0)) > 1.5
+          AND ABS((mc-avg_mc)/NULLIF(std_mc,0)) > 0.3
         ORDER BY ABS((mc-avg_mc)/NULLIF(std_mc,0)) DESC LIMIT 20
     """)
     st.dataframe(anom, use_container_width=True)
