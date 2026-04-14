@@ -73,13 +73,13 @@ with t1:
         df["savings_gap"] = df["branded_cost"] - df["generic_cost"]
         df = df.sort_values("savings_gap", ascending=False).reset_index(drop=True)
         df["display_rank"] = range(1, len(df) + 1)
-        df["short_name"] = df["practice_name"].str[:32]
+        df["short_name"] = df["practice_name"].str[:26]
 
         s1, s2, s3 = st.columns(3)
         top = df.iloc[0]
         s1.metric("Top savings opportunity", top["practice_name"][:28], f"£{top['savings_gap']:,.0f} gap")
         s2.metric("Avg brand prescribing share", f"{df['brand_rate_pct'].mean():.1f}%", "across top 10 practices")
-        s3.metric("Total branded spend", f"£{df['branded_cost'].sum()/1e6:.1f}M", "top 10 practices")
+        s3.metric("Branded spend — top 10", f"£{df['branded_cost'].sum()/1e6:.1f}M", "across top 10 practices")
 
         fig = go.Figure(go.Bar(
             x=df["savings_gap"],
@@ -109,7 +109,7 @@ with t1:
         display_df["savings_gap"] = display_df["savings_gap"].apply(lambda x: f"£{x:,.0f}")
         display_df["brand_rate_pct"] = display_df["brand_rate_pct"].apply(lambda x: f"{x:.1f}%")
         display_df.columns = ["Rank","Practice","ICB","Branded Cost","Generic Cost","Savings Gap","Brand Rate %"]
-        st.caption("Brand Rate % = proportion of prescribing that is branded vs generic alternatives. Higher values indicate greater savings opportunity.")
+        st.caption("Brand Rate % shows the share of prescribing that remains branded rather than generic. Higher values may indicate greater savings opportunity. £0 generic cost indicates no generic prescribing observed in the selected period.")
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 with t2:
