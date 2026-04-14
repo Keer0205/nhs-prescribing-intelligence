@@ -97,3 +97,26 @@ Summary tables pre-aggregate the 54M row fact table into 5 lean reporting tables
 - v1.0 uses Nov 2025-Jan 2026 EPD SNOMED CT-enhanced schema. v2.0 will incorporate additional SNOMED dimensions.
 - Brand vs generic savings are opportunity estimates. Some branded prescribing is clinically justified.
 - The live dashboard queries pre-aggregated summary tables, not the full 54M row dataset, to enable cloud deployment within Supabase free tier limits.
+
+## Key Findings
+
+Three genuine insights from 54,691,186 NHS prescriptions (Nov 2025–Jan 2026):
+
+### Finding 1 — Antimicrobial Resistance Risk
+Accrington Minor Injuries Unit prescribes broad-spectrum antibiotics at **78.5%** of all antibiotic items — nearly 3x the NHS stewardship recommended threshold. Out-of-hours and urgent care services consistently dominate the AMR outlier list. Under time pressure, broad-spectrum becomes the default. This is the pattern NHS stewardship programmes exist to address.
+
+### Finding 2 — Brand vs Generic Savings Opportunity
+Three appliance prescribing services show **100% branded prescribing** with zero generic usage:
+- NHS Surrey ICB Appliance Service: £2.9M branded, £0 generic
+- Notts Appliance Management Service: £2.5M branded, £0 generic
+- BLMK Appliance Prescribing Service: £2.5M branded, £0 generic
+
+These represent the highest savings opportunity practices in England for commissioner review.
+
+### Finding 3 — Highest Spend BNF Chapter
+BNF Chapter 06 (Endocrine System — includes diabetes medications) is consistently the highest spending chapter across all 3 months:
+- Dec 2025: £206M
+- Jan 2026: £197M
+- Nov 2025: £190M
+
+This reflects the growing diabetes medication burden on NHS prescribing budgets, driven by GLP-1 receptor agonists and insulin.
