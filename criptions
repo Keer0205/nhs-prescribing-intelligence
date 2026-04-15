@@ -1,0 +1,31 @@
+                                                                                    QUERY PLAN                                                                                     
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=3125084.61..3125084.66 rows=20 width=55) (actual time=76180.157..76357.504 rows=20 loops=1)
+   ->  Sort  (cost=3125084.61..3125099.84 rows=6093 width=55) (actual time=75181.411..75358.313 rows=20 loops=1)
+         Sort Key: (sum(actual_cost)) DESC
+         Sort Method: top-N heapsort  Memory: 27kB
+         ->  Finalize GroupAggregate  (cost=3123333.12..3124922.48 rows=6093 width=55) (actual time=75152.595..75351.932 rows=9058 loops=1)
+               Group Key: practice_name
+               ->  Gather Merge  (cost=3123333.12..3124754.92 rows=12186 width=55) (actual time=75150.008..75336.098 rows=24919 loops=1)
+                     Workers Planned: 2
+                     Workers Launched: 2
+                     ->  Sort  (cost=3122333.10..3122348.33 rows=6093 width=55) (actual time=74970.949..74972.199 rows=8306 loops=3)
+                           Sort Key: practice_name
+                           Sort Method: quicksort  Memory: 1354kB
+                           Worker 0:  Sort Method: quicksort  Memory: 1352kB
+                           Worker 1:  Sort Method: quicksort  Memory: 1361kB
+                           ->  Partial HashAggregate  (cost=3121873.90..3121950.06 rows=6093 width=55) (actual time=74938.226..74942.813 rows=8306 loops=3)
+                                 Group Key: practice_name
+                                 Batches: 1  Memory Usage: 3729kB
+                                 Worker 0:  Batches: 1  Memory Usage: 3729kB
+                                 Worker 1:  Batches: 1  Memory Usage: 3729kB
+                                 ->  Parallel Seq Scan on raw_prescriptions  (cost=0.00..3007933.93 rows=22787993 width=31) (actual time=425.751..66745.681 rows=18230395 loops=3)
+                                       Filter: (actual_cost IS NOT NULL)
+ Planning Time: 51.070 ms
+ JIT:
+   Functions: 28
+   Options: Inlining true, Optimization true, Expressions true, Deforming true
+   Timing: Generation 128.844 ms, Inlining 423.780 ms, Optimization 991.909 ms, Emission 901.888 ms, Total 2446.421 ms
+ Execution Time: 76506.676 ms
+(27 rows)
+
