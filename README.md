@@ -120,3 +120,33 @@ BNF Chapter 06 (Endocrine System — includes diabetes medications) is consisten
 - Nov 2025: £190M
 
 This reflects the growing diabetes medication burden on NHS prescribing budgets, driven by GLP-1 receptor agonists and insulin.
+
+---
+
+## Future Roadmap
+
+| Version | Name | What it adds |
+|---------|------|-------------|
+| v2 | SNOMED CT migration | Migrate ingestion to EPD with SNOMED CT codes (Sep 2025 onwards). Adds clinical terminology dimension. |
+| v3 | Forecasting layer | Python Prophet/ARIMA on rolling spend trends. Predict next 3-month cost trajectory per ICB. |
+| v4 | Microsoft Fabric migration | Migrate PostgreSQL pipeline to Fabric lakehouse. Medallion architecture: bronze → silver → gold. |
+| v5 | LLM insight summariser | Connect Claude/GPT-4 API to auto-generate plain English monthly reports from SQL outputs. |
+
+---
+
+## Statistical Validation
+
+**AMR Z-score outlier detection (added Day 14):**
+Z-score calculated across all practices using `AVG()` and `STDDEV()` in PostgreSQL.
+
+| Practice | Antibiotic Rate | Z-score | Flag |
+|----------|----------------|---------|------|
+| Accrington Minor Injuries Unit | 78.5% | 2.01 | 🔴 Outlier |
+| NDUC Newcastle Gateshead OOH | 76.9% | 1.53 | 🟡 Elevated |
+| Essex Pharmacy | 75.4% | 1.07 | 🟡 Elevated |
+
+Practices with z-score > 2.0 are statistical outliers — prescribing broad-spectrum antibiotics at a rate more than 2 standard deviations above the national mean.
+
+**OpenPrescribing validation:**
+ICB-level total spend cross-checked against OpenPrescribing.net for Nov 2025–Jan 2026. Aggregate totals align within expected rounding differences. OpenPrescribing does not expose the underlying engineering pipeline, custom AMR tier classification, or audit-style anomaly detection logic — which are the three differentiating layers of this project.
+
