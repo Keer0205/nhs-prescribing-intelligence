@@ -196,19 +196,106 @@ with t4:
 
 with t5:
     st.subheader("Trend and Drift Analysis")
-    st.caption("Monthly spend by BNF chapter — rolling averages and month-on-month drift")
+    st.caption("Monthly spend by BNF chapter — top movers, drift signals and month-on-month change")
+
     trend = q("SELECT year_month, ch, monthly_cost FROM summary_trend ORDER BY year_month, ch")
+
     if not trend.empty:
-        top6 = trend.groupby('ch')['monthly_cost'].sum().nlargest(6).index.tolist()
-        fig5 = px.line(trend[trend['ch'].isin(top6)], x='year_month', y='monthly_cost', color='ch',
+        # BNF chapter readable names
+        BNF_NAMES = {
+            '01': '01 Gastro', '02': '02 Cardiovascular', '03': '03 Respiratory',
+            '04': '04 CNS', '05': '05 Infections', '06': '06 Endocrine',
+            '07': '07 Obstetrics', '08': '08 Oncology', '09': '09 Nutrition',
+            '10': '10 Musculoskeletal', '11': '11 Eye', '12': '12 ENT',
+            '13': '13 Skin', '14': '14 Immunological', '21': '21 Appliances',
+        }
+        trend['ch_label'] = trend['ch'].map(lambda x: BNF_NAMES.get(str(x).zfill(2), f'Ch {x}'))
+
+        # --- Pivot for drift calculation ---
+        months = sorted(trend['year_month'].unique())
+        pivot = trend.pivot_table(index='ch', columns='year_month', values='monthly_cost', aggfunc='sum')
+
+        # Summary cards
+        top6_chs = trend.groupby('ch')['monthly_cost'].sum().nlargest(6).index.tolist()
+
+        # Highest spend chapter
+        top_ch = trend.groupby('ch')['monthly_cost'].sum().idxmax()
+        top_ch_name = BNF_NAMES.get(str(top_ch).zfill(2), f'Ch {top_ch}')
+        top_ch_spend = trend.groupby('ch')['monthly_cost'].sum().max()
+
+        # Largest month-on-month increase (last 2 months)
+        if len(months) >= 2:
+            m1, m2 = months[-2], months[-1]
+            drift = pivot[m2] - pivot[m1]
+            biggest_mover_ch = drift.idxmax()
+            biggest_mover_name = BNF_NAMES.get(str(biggest_mover_ch).zfill(2), f'Ch {biggest_mover_ch}')
+            biggest_mover_val = drift.max()
+            biggest_mover_pct = (biggest_mover_val / pivot[m1][biggest_mover_ch] * 100) if pivot[m1][biggest_mover_ch] > 0 else 0
+
+            # Most stable chapter (smallest absolute drift in top 6)
+            stable_ch = drift[top6_chs].abs().idxmin()
+            stable_name = BNF_NAMES.get(str(stable_ch).zfill(2), f'Ch {stable_ch}')
+            stable_val = drift[stable_ch]
+        else:
+            biggest_mover_name, biggest_mover_val, biggest_mover_pct = "N/A", 0, 0
+            stable_name, stable_val = "N/A", 0
+
+        # --- 3 Summary Cards ---
+        ca, cb, cc = st.columns(3)
+        with ca:
+            st.metric("📈 Highest spend chapter", top_ch_name, f"£{top_ch_spend/1e6:.1f}M total")
+        with cb:
+            st.metric("⚡ Largest MoM increase", biggest_mover_name,
+                      f"+£{biggest_mover_val/1e6:.1f}M ({biggest_mover_pct:+.1f}%)" if len(months)>=2 else "N/A")
+        with cc:
+            st.metric("✅ Most stable chapter", stable_name,
+                      f"£{abs(stable_val)/1e6:.2f}M drift" if len(months)>=2 else "N/A")
+
+        st.markdown("---")
+
+        # --- Line chart with readable labels + clean x-axis ---
+        trend_top = trend[trend['ch'].isin(top6_chs)].copy()
+        # Format x-axis as Nov 2025 / Dec 2025 / Jan 2026
+        trend_top['month_label'] = trend_top['year_month'].astype(str).apply(
+            lambda x: __import__('datetime').datetime.strptime(x, '%Y-%m').strftime('%b %Y') if len(x)==7 else x
+        )
+
+        fig5 = px.line(
+            trend_top, x='month_label', y='monthly_cost', color='ch_label',
             title="Monthly spend — top 6 BNF chapters",
-            labels={'monthly_cost': 'Monthly Cost (£)', 'year_month': 'Month', 'ch': 'BNF Chapter'},
-            markers=True, height=450)
+            labels={'monthly_cost': 'Monthly Cost (£)', 'month_label': 'Month', 'ch_label': 'BNF Chapter'},
+            markers=True, height=430,
+            category_orders={'month_label': [
+                __import__('datetime').datetime.strptime(m, '%Y-%m').strftime('%b %Y') for m in months
+            ]}
+        )
         fig5.update_layout(legend_title="BNF Chapter", margin=dict(t=40, b=40))
+        fig5.update_yaxes(tickprefix="£", tickformat=",.0f")
         st.plotly_chart(fig5, use_container_width=True)
-        st.dataframe(trend.rename(columns={
-            'year_month':'Month','ch':'BNF Chapter','monthly_cost':'Monthly Cost (£)'
-        }), use_container_width=True, hide_index=True)
+
+        # --- Drift table: top movers only ---
+        st.markdown("**Month-on-month drift — biggest movers**")
+        if len(months) >= 2:
+            drift_df = trend[trend['ch'].isin(top6_chs)].pivot_table(
+                index=['ch','ch_label'], columns='year_month', values='monthly_cost', aggfunc='sum'
+            ).reset_index()
+            if m1 in drift_df.columns and m2 in drift_df.columns:
+                drift_df['MoM Change (£)'] = drift_df[m2] - drift_df[m1]
+                drift_df['MoM Change (%)'] = ((drift_df[m2] - drift_df[m1]) / drift_df[m1] * 100).round(1)
+                drift_df = drift_df.sort_values('MoM Change (£)', ascending=False)
+
+                import datetime
+                m1_label = datetime.datetime.strptime(m1, '%Y-%m').strftime('%b %Y')
+                m2_label = datetime.datetime.strptime(m2, '%Y-%m').strftime('%b %Y')
+
+                display_drift = drift_df[['ch_label', m1, m2, 'MoM Change (£)', 'MoM Change (%)']].copy()
+                display_drift.columns = ['BNF Chapter', f'{m1_label} (£)', f'{m2_label} (£)', 'MoM Change (£)', 'MoM %']
+                for col in [f'{m1_label} (£)', f'{m2_label} (£)', 'MoM Change (£)']:
+                    display_drift[col] = display_drift[col].apply(lambda x: f"£{x:,.0f}")
+                display_drift['MoM %'] = display_drift['MoM %'].apply(lambda x: f"{x:+.1f}%")
+                st.dataframe(display_drift, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Only one month of data available — drift analysis requires 2+ months.")
 
 st.markdown("""
 <div class="footer-wrap">
